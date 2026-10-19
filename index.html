@@ -1,0 +1,311 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>헬리콥터 밸리 🚁</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #e8f6ff; color: #17344a;
+  font-family: Arial, sans-serif; text-align: center;
+}
+main { max-width: 900px; margin: auto; padding: 18px; }
+h1 { margin: 8px 0; }
+p { margin: 8px 0 14px; }
+.hud {
+  display: flex; justify-content: space-between; gap: 8px;
+  margin: 12px 0; font-weight: bold; flex-wrap: wrap;
+}
+.hud span { background: white; padding: 10px 14px; border-radius: 12px; }
+.game-wrap { position: relative; }
+canvas {
+  display: block; width: 100%; height: auto;
+  border: 3px solid white; border-radius: 16px;
+  box-shadow: 0 6px 22px #7ca6bb55;
+  touch-action: none; background: #9be2ff;
+}
+.overlay {
+  position: absolute; inset: 0; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
+  padding: 20px; background: #17344a99; color: white;
+  border-radius: 16px;
+}
+.overlay h2 { font-size: clamp(24px, 5vw, 38px); margin: 8px; }
+.overlay p { line-height: 1.7; }
+button {
+  border: 0; border-radius: 12px; padding: 13px 22px;
+  background: #ffcc55; color: #17344a;
+  font-weight: bold; font-size: 17px; cursor: pointer;
+}
+#restart { display: none; }
+.hint { font-size: 14px; color: #46677b; line-height: 1.7; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🚁 헬리콥터 밸리</h1>
+  <p>푸른 산과 계곡을 통과하는 비행 모험!</p>
+  <div class="hud">
+    <span>🏆 점수: <b id="score">0</b></span>
+    <span>⭐ 내 최고 점수: <b id="best">0</b></span>
+  </div>
+  <div class="game-wrap">
+    <canvas id="game" width="800" height="450"></canvas>
+    <div class="overlay" id="overlay">
+      <h2 id="message">산악 비행을 시작할까?</h2>
+      <p id="instructions">마우스를 누르거나 스페이스바를 누르면 상승!<br>
+      손을 놓으면 하강해. 산에 부딪히지 않도록 조심해!</p>
+      <button id="start">비행 시작 🚁</button>
+    </div>
+  </div>
+  <p class="hint">🖱️ 마우스를 누르고 있기 · ⌨️ 스페이스바 누르고 있기<br>
+  장애물을 통과하면 점수가 올라가! 충돌하면 게임 종료.</p>
+  <button id="restart">다시 비행하기 ↻</button>
+</main>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const scoreEl = document.getElementById("score");
+const bestEl = document.getElementById("best");
+const overlay = document.getElementById("overlay");
+const message = document.getElementById("message");
+const instructions = document.getElementById("instructions");
+const startBtn = document.getElementById("start");
+const restartBtn = document.getElementById("restart");
+
+let best = 0;
+try { best = Number(localStorage.getItem("valleyBest")) || 0; } catch(e) {}
+bestEl.textContent = best;
+
+let helicopter, obstacles, score, running, holding, frame, speed;
+let clouds = [
+  {x:100,y:65,s:1},{x:390,y:110,s:0.8},{x:680,y:55,s:1.1}
+];
+
+function reset() {
+  helicopter = {x:135, y:220, vy:0};
+  obstacles = [];
+  score = 0;
+  frame = 0;
+  speed = 3.2;
+  holding = false;
+  scoreEl.textContent = "0";
+}
+
+function drawCloud(x,y,s) {
+  ctx.fillStyle = "#ffffffcc";
+  ctx.beginPath();
+  ctx.arc(x,y,17*s,0,Math.PI*2);
+  ctx.arc(x+20*s,y-9*s,22*s,0,Math.PI*2);
+  ctx.arc(x+43*s,y,16*s,0,Math.PI*2);
+  ctx.fill();
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0,0,0,450);
+  g.addColorStop(0,"#78d6ff");
+  g.addColorStop(1,"#e3f8ff");
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,800,450);
+
+  clouds.forEach(c => {
+    drawCloud(c.x,c.y,c.s);
+    if (running) {
+      c.x -= 0.5;
+      if(c.x < -60) c.x = 850;
+    }
+  });
+
+  // 멀리 보이는 산
+  ctx.fillStyle = "#9bd6a4";
+  ctx.beginPath();
+  ctx.moveTo(0,320);
+  for(let x=0;x<=800;x+=8) {
+    ctx.lineTo(x,275 + Math.sin((x+frame*0.4)/75)*32
+      + Math.sin(x/33)*12);
+  }
+  ctx.lineTo(800,450); ctx.lineTo(0,450); ctx.fill();
+
+  // 가까운 산과 계곡의 지형
+  ctx.fillStyle = "#459d69";
+  ctx.beginPath();
+  ctx.moveTo(0,375);
+  for(let x=0;x<=800;x+=8) {
+    ctx.lineTo(x,350 + Math.sin((x+frame*speed)/100)*32
+      + Math.sin((x+frame*speed)/43)*13);
+  }
+  ctx.lineTo(800,450); ctx.lineTo(0,450); ctx.fill();
+
+  // 잔디 언덕의 밝은 윤곽
+  ctx.strokeStyle = "#b4e58b";
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  for(let x=0;x<=800;x+=8) {
+    const y=350 + Math.sin((x+frame*speed)/100)*32
+      + Math.sin((x+frame*speed)/43)*13;
+    if(x===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+}
+
+function drawHelicopter() {
+  const x=helicopter.x, y=helicopter.y;
+  ctx.save();
+  ctx.translate(x,y);
+
+  // 꼬리
+  ctx.strokeStyle="#e87932"; ctx.lineWidth=7;
+  ctx.beginPath(); ctx.moveTo(-18,2); ctx.lineTo(-42,8); ctx.stroke();
+  ctx.fillStyle="#f7a33b";
+  ctx.beginPath(); ctx.moveTo(-43,0); ctx.lineTo(-52,-8);
+  ctx.lineTo(-51,12); ctx.closePath(); ctx.fill();
+
+  // 몸통
+  ctx.fillStyle="#f8b83e";
+  ctx.beginPath(); ctx.ellipse(0,0,27,15,0,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle="#b96c27"; ctx.lineWidth=2; ctx.stroke();
+
+  // 조종석 유리
+  ctx.fillStyle="#7ee3f4";
+  ctx.beginPath(); ctx.ellipse(12,-3,12,9,-0.15,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle="#ffffff"; ctx.lineWidth=2; ctx.stroke();
+
+  // 웃는 얼굴
+  ctx.fillStyle="#17344a";
+  ctx.beginPath(); ctx.arc(16,-1,1.8,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle="#17344a"; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(17,2,3,0.2,1.5); ctx.stroke();
+
+  // 착륙 다리
+  ctx.strokeStyle="#465967"; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(-12,12); ctx.lineTo(-9,20);
+  ctx.lineTo(13,20); ctx.lineTo(18,12); ctx.stroke();
+
+  // 프로펠러 축과 날개
+  ctx.strokeStyle="#465967"; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo(0,-22); ctx.stroke();
+  ctx.strokeStyle="#ffffff"; ctx.lineWidth=4;
+  const angle = frame * 0.45;
+  ctx.beginPath();
+  ctx.moveTo(-30*Math.cos(angle),-22-5*Math.sin(angle));
+  ctx.lineTo(30*Math.cos(angle),-22+5*Math.sin(angle));
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function addObstacle() {
+  const gap = Math.max(142, 190 - score*0.7);
+  const margin = 65;
+  const top = margin + Math.random()*(450-gap-margin*2);
+  obstacles.push({x:830, top:top, gap:gap, passed:false});
+}
+
+function drawObstacles() {
+  obstacles.forEach(o => {
+    const bottom = o.top + o.gap;
+    // 위쪽 바위
+    ctx.fillStyle="#367c50";
+    ctx.fillRect(o.x,0,54,o.top);
+    ctx.fillStyle="#66b96b";
+    ctx.fillRect(o.x-5,o.top-14,64,14);
+    // 아래쪽 바위
+    ctx.fillStyle="#367c50";
+    ctx.fillRect(o.x,bottom,54,450-bottom);
+    ctx.fillStyle="#66b96b";
+    ctx.fillRect(o.x-5,bottom,64,14);
+
+    if(running) o.x -= speed;
+
+    if(!o.passed && o.x+54 < helicopter.x) {
+      o.passed=true;
+      score++;
+      scoreEl.textContent=score;
+      if(score>best) {
+        best=score;
+        bestEl.textContent=best;
+        try { localStorage.setItem("valleyBest",best); } catch(e) {}
+      }
+      if(score%5===0) speed=Math.min(5.8,speed+0.25);
+    }
+
+    if(helicopter.x+22>o.x && helicopter.x-22<o.x+54 &&
+      (helicopter.y-14<o.top || helicopter.y+14>bottom)) {
+      endGame();
+    }
+  });
+  obstacles = obstacles.filter(o=>o.x>-80);
+}
+
+function endGame() {
+  if(!running) return;
+  running=false;
+  holding=false;
+  message.textContent="💥 비행 종료!";
+  instructions.innerHTML="최종 점수: "+score+"점<br>최고 점수: "+best+"점<br>다시 도전해 볼까?";
+  overlay.style.display="flex";
+  startBtn.style.display="none";
+  restartBtn.style.display="inline-block";
+}
+
+function startGame() {
+  reset();
+  running=true;
+  overlay.style.display="none";
+  startBtn.style.display="inline-block";
+  restartBtn.style.display="none";
+}
+
+function draw() {
+  drawBackground();
+  if(running) {
+    frame++;
+    helicopter.vy += holding ? -0.22 : 0.16;
+    helicopter.vy = Math.max(-3.8,Math.min(3.8,helicopter.vy));
+    helicopter.y += helicopter.vy;
+
+    if(frame%88===1) addObstacle();
+    drawObstacles();
+
+    if(helicopter.y<18 || helicopter.y>432) endGame();
+  } else {
+    frame++;
+    if(!helicopter) reset();
+  }
+  drawHelicopter();
+  requestAnimationFrame(draw);
+}
+
+function setHolding(value) {
+  if(running) holding=value;
+}
+
+canvas.addEventListener("pointerdown",e=>{
+  e.preventDefault(); setHolding(true);
+});
+window.addEventListener("pointerup",()=>setHolding(false));
+window.addEventListener("pointercancel",()=>setHolding(false));
+window.addEventListener("blur",()=>setHolding(false));
+
+window.addEventListener("keydown",e=>{
+  if(e.code==="Space") {
+    e.preventDefault();
+    if(!e.repeat && !running) startGame();
+    setHolding(true);
+  }
+});
+window.addEventListener("keyup",e=>{
+  if(e.code==="Space") setHolding(false);
+});
+
+startBtn.addEventListener("click",startGame);
+restartBtn.addEventListener("click",startGame);
+
+reset();
+draw();
+</script>
+</body>
+</html>
